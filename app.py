@@ -69,67 +69,57 @@ def download_video():
 
         ydl_opts = {
             'format': 'best',
-            'quiet': False,
-            'no_warnings': False,
+            'quiet': True,
+            'no_warnings': True,
             'nocheckcertificate': True,
-            'no_check_certificate': True,
+            'extract_flat': True,
+            'youtube_include_dash_manifest': False,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            },
-            'socket_timeout': 30,
-            'force_generic_extractor': False,
-            'extract_flat': False,
-            'youtube_include_dash_manifest': False
+            }
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
-                # Force cache clearing
-                ydl.cache.remove()
-                
-                # Get video info first
-                info = ydl.extract_info(url, download=False)
-                if not info:
-                    raise Exception("Failed to extract video information")
+                # Extract basic info first
+                info_dict = ydl.extract_info(url, download=False)
+                if not info_dict:
+                    raise Exception("Could not extract video information")
 
-                video_url = info['url']
-                video_title = info['title']
-                video_ext = info['ext']
-                
+                # Get the best format
+                formats = info_dict.get('formats', [info_dict])
+                best_format = formats[-1]
+                video_url = best_format['url']
+                video_title = info_dict.get('title', 'video')
+                video_ext = best_format.get('ext', 'mp4')
+
                 # Create a safe filename
                 safe_title = sanitize_filename(video_title)
                 filename = f"{safe_title}.{video_ext}"
-                
-                # Get the video stream with SSL verification disabled
-                session = requests.Session()
-                session.verify = False  # Disable SSL verification
-                response = session.get(video_url, stream=True, headers=ydl_opts['http_headers'])
-                
-                # Create Flask response with streaming
-                def generate():
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            yield chunk
 
-                # Create response with proper headers for download
-                flask_response = Response(
+                # Create a streaming response
+                def generate():
+                    with requests.get(video_url, stream=True, verify=False) as r:
+                        r.raise_for_status()
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                yield chunk
+
+                response = Response(
                     generate(),
-                    content_type=response.headers.get('content-type', 'video/mp4')
+                    mimetype='video/mp4',
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{filename}"',
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0'
+                    }
                 )
-                
-                # Add headers to force download
-                flask_response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
-                flask_response.headers['Content-Length'] = response.headers.get('content-length')
-                flask_response.headers['Accept-Ranges'] = 'bytes'
-                flask_response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-                flask_response.headers['Pragma'] = 'no-cache'
-                flask_response.headers['Expires'] = '0'
-                
-                return flask_response
+                return response
 
             except Exception as inner_e:
                 app.logger.error(f"Inner error: {str(inner_e)}")
-                raise inner_e
+                return jsonify({'error': str(inner_e)}), 500
 
     except Exception as e:
         app.logger.error(f"Error downloading video: {str(e)}")
