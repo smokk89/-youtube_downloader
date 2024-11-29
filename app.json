@@ -1,0 +1,11 @@
+{
+  "name": "YouTube Downloader",
+  "description": "A web application to download YouTube videos",
+  "repository": "https://github.com/smokk89/-youtube_downloader",
+  "keywords": ["python", "flask", "youtube", "downloader"],
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ]
+}
