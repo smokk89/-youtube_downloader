@@ -2,16 +2,16 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from flask import Flask, render_template, request, send_file, jsonify, Response
-import yt_dlp
+from pytube import YouTube
 import os
 import re
+import string
+from datetime import datetime
 import certifi
 import unicodedata
-import string
-import shutil
-from datetime import datetime
 import tempfile
 import requests
+import shutil
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max-limit
@@ -67,59 +67,49 @@ def download_video():
         if not is_valid_youtube_url(url):
             return jsonify({'error': 'Invalid YouTube URL'}), 400
 
-        ydl_opts = {
-            'format': 'best',
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
-            'extract_flat': True,
-            'youtube_include_dash_manifest': False,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-        }
+        try:
+            # Create YouTube object
+            yt = YouTube(url)
+            
+            # Get the highest resolution stream
+            video = yt.streams.get_highest_resolution()
+            
+            if not video:
+                return jsonify({'error': 'No suitable video stream found'}), 400
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            try:
-                # Extract basic info first
-                info_dict = ydl.extract_info(url, download=False)
-                if not info_dict:
-                    raise Exception("Could not extract video information")
+            # Get video info
+            video_title = yt.title
+            video_ext = 'mp4'  # pytube downloads in MP4 format
+            
+            # Create a safe filename
+            safe_title = sanitize_filename(video_title)
+            filename = f"{safe_title}.{video_ext}"
+            
+            # Stream the video
+            def generate():
+                stream_url = video.url
+                with requests.get(stream_url, stream=True) as r:
+                    r.raise_for_status()
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            yield chunk
 
-                # Get the best format
-                formats = info_dict.get('formats', [info_dict])
-                best_format = formats[-1]
-                video_url = best_format['url']
-                video_title = info_dict.get('title', 'video')
-                video_ext = best_format.get('ext', 'mp4')
+            # Create response with proper headers
+            response = Response(
+                generate(),
+                mimetype='video/mp4',
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"',
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    'Pragma': 'no-cache',
+                    'Expires': '0'
+                }
+            )
+            return response
 
-                # Create a safe filename
-                safe_title = sanitize_filename(video_title)
-                filename = f"{safe_title}.{video_ext}"
-
-                # Create a streaming response
-                def generate():
-                    with requests.get(video_url, stream=True, verify=False) as r:
-                        r.raise_for_status()
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                yield chunk
-
-                response = Response(
-                    generate(),
-                    mimetype='video/mp4',
-                    headers={
-                        'Content-Disposition': f'attachment; filename="{filename}"',
-                        'Cache-Control': 'no-cache, no-store, must-revalidate',
-                        'Pragma': 'no-cache',
-                        'Expires': '0'
-                    }
-                )
-                return response
-
-            except Exception as inner_e:
-                app.logger.error(f"Inner error: {str(inner_e)}")
-                return jsonify({'error': str(inner_e)}), 500
+        except Exception as e:
+            app.logger.error(f"Error processing video: {str(e)}")
+            return jsonify({'error': f'Error processing video: {str(e)}'}), 500
 
     except Exception as e:
         app.logger.error(f"Error downloading video: {str(e)}")
