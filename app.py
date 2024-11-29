@@ -1,3 +1,6 @@
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 from flask import Flask, render_template, request, send_file, jsonify, Response
 import yt_dlp
 import os
@@ -69,46 +72,64 @@ def download_video():
             'quiet': False,
             'no_warnings': False,
             'nocheckcertificate': True,
+            'no_check_certificate': True,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
+            },
+            'socket_timeout': 30,
+            'force_generic_extractor': False,
+            'extract_flat': False,
+            'youtube_include_dash_manifest': False
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Get video info first
-            info = ydl.extract_info(url, download=False)
-            video_url = info['url']
-            video_title = info['title']
-            video_ext = info['ext']
-            
-            # Create a safe filename
-            safe_title = sanitize_filename(video_title)
-            filename = f"{safe_title}.{video_ext}"
-            
-            # Get the video stream
-            response = requests.get(video_url, stream=True, headers=ydl_opts['http_headers'])
-            
-            # Create Flask response with streaming
-            def generate():
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        yield chunk
+            try:
+                # Force cache clearing
+                ydl.cache.remove()
+                
+                # Get video info first
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    raise Exception("Failed to extract video information")
 
-            # Create response with proper headers for download
-            flask_response = Response(
-                generate(),
-                content_type=response.headers.get('content-type', 'video/mp4')
-            )
-            
-            # Add headers to force download
-            flask_response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
-            flask_response.headers['Content-Length'] = response.headers.get('content-length')
-            flask_response.headers['Accept-Ranges'] = 'bytes'
-            flask_response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-            flask_response.headers['Pragma'] = 'no-cache'
-            flask_response.headers['Expires'] = '0'
-            
-            return flask_response
+                video_url = info['url']
+                video_title = info['title']
+                video_ext = info['ext']
+                
+                # Create a safe filename
+                safe_title = sanitize_filename(video_title)
+                filename = f"{safe_title}.{video_ext}"
+                
+                # Get the video stream with SSL verification disabled
+                session = requests.Session()
+                session.verify = False  # Disable SSL verification
+                response = session.get(video_url, stream=True, headers=ydl_opts['http_headers'])
+                
+                # Create Flask response with streaming
+                def generate():
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            yield chunk
+
+                # Create response with proper headers for download
+                flask_response = Response(
+                    generate(),
+                    content_type=response.headers.get('content-type', 'video/mp4')
+                )
+                
+                # Add headers to force download
+                flask_response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+                flask_response.headers['Content-Length'] = response.headers.get('content-length')
+                flask_response.headers['Accept-Ranges'] = 'bytes'
+                flask_response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+                flask_response.headers['Pragma'] = 'no-cache'
+                flask_response.headers['Expires'] = '0'
+                
+                return flask_response
+
+            except Exception as inner_e:
+                app.logger.error(f"Inner error: {str(inner_e)}")
+                raise inner_e
 
     except Exception as e:
         app.logger.error(f"Error downloading video: {str(e)}")
